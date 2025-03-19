@@ -1,0 +1,162 @@
+---
+title: "Final Project 131"
+output: html_document
+--- 
+```{r include=FALSE}
+# -------------------------------
+# 1. Load Required Libraries
+# -------------------------------
+library(tidyverse)     # Data manipulation & visualization
+library(caret)         # Data splitting & evaluation
+library(xgboost)       # Boosting (XGBoost)
+library(MASS)          # LDA and QDA
+library(class)         # KNN classification
+library(FNN)           # KNN regression (knn.reg)
+library(mgcv)          # Generalized Additive Models (GAM)
+library(rpart)         # Decision Trees
+library(rpart.plot)    # Plotting decision trees
+library(randomForest)  # Random Forests
+library(ipred)         # Bagging
+library(gbm)           # Boosting (alternative)
+library(glmnet)        # Ridge and Lasso Regression
+library(arrow)
+
+```
+
+```{r}
+data <- read_csv_arrow("ultimategauchosresults2024.csv")
+#subject to change
+```
+
+```{r}
+# -------------------------------
+# 2. Data Preprocessing
+# -------------------------------
+# (Assume your data frame is named 'data' and contains PlayResult, ExitSpeed, Angle, BatterSide, etc.)
+data <- data %>%
+  mutate(
+    SLGValue = case_when(
+      PlayResult %in% c("Out") ~ 0,
+      PlayResult == "Single" ~ 1,
+      PlayResult == "Double" ~ 2,
+      PlayResult == "Triple" ~ 3,
+      PlayResult == "HomeRun" ~ 4,
+      TRUE ~ NA_real_
+    ),
+    ExitSpeed = round(as.numeric(as.character(ExitSpeed)), 1),
+    Angle = round(as.numeric(as.character(Angle)), 1)
+  ) %>%
+  na.omit()
+
+# Create a binary outcome for classification tasks: Hit (SLGValue > 0) vs. NoHit
+data <- data %>%
+  mutate(Hit = ifelse(SLGValue > 0, "Hit", "NoHit"))
+
+# (Optional) Print table of BatterSide
+print(table(data$BatterSide))
+```
+Prepping the data for modeling. Ensuring that we have enough data in each column to appropriately predict slugging percentage
+
+# fair cross validation
+
+
+The code below ensures that we train all the models fairly using the same cross validation for each so that we can accurately compare their results. 
+
+
+```{r}
+library(caret)
+library(dplyr)
+
+# -------------------------------
+# 1. Split the data into training and testing sets
+# -------------------------------
+set.seed(123)  # For reproducibility
+trainIndex <- createDataPartition(data$SLGValue, p = 0.8, list = FALSE)
+trainData <- data[trainIndex, ]
+testData <- data[-trainIndex, ]
+
+# -------------------------------
+# 2. Define cross validation settings on the training set
+# -------------------------------
+train_control <- trainControl(
+  method = "cv",
+  number = 5,
+  savePredictions = "final"
+)
+
+# -------------------------------
+# 3. Train multiple models using the training set
+# -------------------------------
+# Decision Tree Model
+model_dt <- train(
+  SLGValue ~ ExitSpeed + Angle,
+  data = trainData,
+  method = "rpart",
+  trControl = train_control
+)
+
+# Random Forest Model
+model_rf <- train(
+  SLGValue ~ ExitSpeed + Angle,
+  data = trainData,
+  method = "rf",
+  trControl = train_control
+)
+
+# XGBoost Model
+model_xgb <- train(
+  SLGValue ~ ExitSpeed + Angle,
+  data = trainData,
+  method = "xgbTree",
+  trControl = train_control
+)
+
+# Bagged Tree Model
+model_bag <- train(
+  SLGValue ~ ExitSpeed + Angle,
+  data = trainData,
+  method = "treebag",
+  trControl = train_control
+)
+
+```
+
+
+```{r}
+models <- list(
+  DecisionTree = model_dt,
+  RandomForest = model_rf,
+  XGBoost = model_xgb,
+  BaggedTree = model_bag
+)
+
+# Initialize a results data frame to store performance metrics
+results <- data.frame(
+  Model = character(),
+  RMSE = numeric(),
+  Rsquared = numeric(),
+  MAE = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop through each model to predict on testData and calculate metrics
+for (model_name in names(models)) {
+  preds <- predict(models[[model_name]], testData)
+  
+  # Compute performance metrics
+  rmse_val <- RMSE(preds, testData$SLGValue)
+  rsq_val <- R2(preds, testData$SLGValue)
+  mae_val <- MAE(preds, testData$SLGValue)
+  
+  # Append the metrics to the results data frame
+  results <- rbind(results, data.frame(
+    Model = model_name,
+    RMSE = rmse_val,
+    Rsquared = rsq_val,
+    MAE = mae_val
+  ))
+}
+
+# Display the results in a kable table
+kable(results, caption = "Comparison of Model Performance Metrics")
+```
